@@ -2,14 +2,16 @@ package main
 
 import (
 	"crypto/sha256"
+	"errors"
 	"fmt"
 	"os"
 	"os/exec"
+	"path/filepath"
+	"secretsctl/internal/agekms"
+	"secretsctl/internal/sops"
 	"strings"
 
 	"github.com/spf13/cobra"
-
-	"secretsctl/internal/agekms"
 )
 
 func main() {
@@ -94,21 +96,80 @@ func bootstrapCmd() *cobra.Command {
 				return err
 			}
 
-			fmt.Println("AGE key generated, fingerprinted, and encrypted with KMS")
+			if err := sops.WriteConfig(pub); err != nil {
+				return err
+			}
+
+			fmt.Println("AGE key generated, fingerprinted, encrypted, and .sops.yaml created")
 			return nil
+
 		},
 	}
 }
-
 
 /* ---------------- STUB COMMANDS (compile-safe) ---------------- */
 
 func encryptCmd() *cobra.Command {
 	return &cobra.Command{
 		Use:   "enc <secret>.yaml",
-		Short: "Encrypt a secret (stub)",
+		Short: "Encrypt a plaintext secret using SOPS + AGE",
+		Args:  cobra.ExactArgs(1),
 		RunE: func(cmd *cobra.Command, args []string) error {
-			return fmt.Errorf("enc not implemented yet")
+			plain := args[0]
+
+			// Filename guard
+			if filepath.Ext(plain) != ".yaml" {
+				return fmt.Errorf("plaintext secret must be a .yaml file")
+			}
+			if strings.HasSuffix(plain, ".enc.yaml") {
+				return fmt.Errorf("file is already encrypted")
+			}
+
+			enc := strings.TrimSuffix(plain, ".yaml") + ".enc.yaml"
+
+			// Refuse overwrite
+			if _, err := os.Stat(enc); err == nil {
+				return fmt.Errorf("encrypted secret already exists: %s", enc)
+			}
+
+			// Ensure plaintext exists
+			if _, err := os.Stat(plain); err != nil {
+				return fmt.Errorf("plaintext secret not found: %s", plain)
+			}
+
+			// Ensure AGE key exists
+			if _, err := os.Stat(agekms.EncryptedKey); err != nil {
+				return errors.New("AGE key not bootstrapped; run `secretsctl bootstrap`")
+			}
+
+			// Decrypt AGE key (memory only)
+			ageKey, err := agekms.DecryptAGE()
+			if err != nil {
+				return err
+			}
+
+			// Run SOPS
+			cmdSops := exec.Command(
+				"sops",
+				"--encrypt",
+				"--output", enc,
+				plain,
+			)
+
+			cmdSops.Env = append(
+				os.Environ(),
+				"SOPS_AGE_KEY="+string(ageKey),
+			)
+
+			cmdSops.Stdout = os.Stdout
+			cmdSops.Stderr = os.Stderr
+
+			if err := cmdSops.Run(); err != nil {
+				return fmt.Errorf("sops encryption failed: %w", err)
+			}
+
+			fmt.Printf("Encrypted %s → %s\n", plain, enc)
+			return nil
 		},
 	}
 }
@@ -116,9 +177,10 @@ func encryptCmd() *cobra.Command {
 func decryptCmd() *cobra.Command {
 	return &cobra.Command{
 		Use:   "dec <secret>.enc.yaml",
-		Short: "Decrypt a secret (stub)",
+		Short: "Decrypt a SOPS-encrypted secret",
+		Args:  cobra.ExactArgs(1),
 		RunE: func(cmd *cobra.Command, args []string) error {
-			return fmt.Errorf("dec not implemented yet")
+			return sops.DecryptFile(args[0])
 		},
 	}
 }
@@ -154,4 +216,3 @@ func extractAgePublicKey(privateKey []byte) (string, error) {
 	}
 	return "", fmt.Errorf("public key not found in AGE key material")
 }
-
