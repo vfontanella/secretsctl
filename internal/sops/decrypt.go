@@ -8,7 +8,7 @@ import (
 	"strings"
 )
 
-func DecryptFile(encPath string) error {
+func DecryptFile(encPath string, ageKey []byte) error {
 	if !strings.HasSuffix(encPath, ".enc.yaml") {
 		return fmt.Errorf("expected encrypted file <name>.enc.yaml")
 	}
@@ -19,12 +19,18 @@ func DecryptFile(encPath string) error {
 		return fmt.Errorf("refusing to overwrite existing plaintext file: %s", plainPath)
 	}
 
-	if err := ensureSopsEncrypted(encPath); err != nil {
+	if err := EnsureEncrypted(encPath); err != nil {
 		return err
 	}
 
 	cmd := exec.Command("sops", "-d", encPath)
 	cmd.Stderr = os.Stderr
+
+	// 🔑 Inject AGE key (critical fix)
+	cmd.Env = append(
+		os.Environ(),
+		"SOPS_AGE_KEY="+string(ageKey),
+	)
 
 	out, err := cmd.Output()
 	if err != nil {
@@ -35,6 +41,10 @@ func DecryptFile(encPath string) error {
 		return err
 	}
 
-	fmt.Printf("Decrypted %s → %s\n", filepath.Base(encPath), filepath.Base(plainPath))
+	fmt.Printf("Decrypted %s → %s\n",
+		filepath.Base(encPath),
+		filepath.Base(plainPath),
+	)
+
 	return nil
 }
