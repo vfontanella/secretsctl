@@ -6,7 +6,7 @@ import (
 	"strings"
 )
 
-func ensureSopsEncrypted(path string) error {
+func EnsureEncrypted(path string) error {
 	b, err := os.ReadFile(path)
 	if err != nil {
 		return err
